@@ -14,18 +14,6 @@ Expected features:
 - a message to an offline friend can be sent from one device on the behalf of another when the friend comes back online
 - a user's device can be a daemon running on a server somewhere, ensuring 100% message reception and possibility of synchronizing
 
-TODO:
-
-- sync nickname & status message between devices ?
-- sync friend nicknames & status messages between devices ?
-- what to do for group leave/join synchronization ?
-- what to do for file sharing ?
-
-Advanced / more complicated :
-
-- each device can have their own individual limit on the number of events they store locally and their expiration date
-- group chat histories can *optionnally* be made available to the other group members with a querying and searching API
-
 
 ## Main points
 
@@ -168,9 +156,3 @@ header
 arg_dot_dev : pk
 arg_dot_sn : uint64_t
 ```
-
-
-## DEV TODO LOG
-
-- function to check if they also have us as a device
-- keep in mem the device list of currently online peers, not in db, use that
