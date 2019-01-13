@@ -21,6 +21,8 @@
 #include <tox/tox.h>
 #include "toxtore.h"
 
+#define sqlite3_queryf toxtore_util_sqlite3_queryf
+
 /*******************************************************************************
  *
  * Consts & Macros

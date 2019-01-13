@@ -14,6 +14,8 @@
 
 #include "toxtore.h"
 
+#define sqlite3_queryf toxtore_util_sqlite3_queryf
+
 // #define TOXTORE_MUCHDEBUG
 
 
@@ -112,147 +114,6 @@ void toxtore_friend_lossless_packet_handler(Tox* tox,
                                             size_t length,
                                             void* user_data);
 
-
-
-
-// FOR DEBUG
-// FROM https://gist.github.com/ccbrown/9722406, THANK YOU <3
-
-void stderr_hexdump(const void* data, size_t size) {
-    char ascii[17];
-    size_t i, j;
-    ascii[16] = '\0';
-    for (i = 0; i < size; ++i) {
-        fprintf(stderr, "%02X ", ((unsigned char*)data)[i]);
-        if (((unsigned char*)data)[i] >= ' ' && ((unsigned char*)data)[i] <= '~') {
-            ascii[i % 16] = ((unsigned char*)data)[i];
-        } else {
-            ascii[i % 16] = '.';
-        }
-        if ((i+1) % 8 == 0 || i+1 == size) {
-            fprintf(stderr, " ");
-            if ((i+1) % 16 == 0) {
-                fprintf(stderr, "|  %s \n", ascii);
-            } else if (i+1 == size) {
-                ascii[(i+1) % 16] = '\0';
-                if ((i+1) % 16 <= 8) {
-                    fprintf(stderr, " ");
-                }
-                for (j = (i+1) % 16; j < 16; ++j) {
-                    fprintf(stderr, "   ");
-                }
-                fprintf(stderr, "|  %s \n", ascii);
-            }
-        }
-    }
-}
-
-// ---------------------
-// HELPER
-// SQLITE3 VARARG QUERY
-int sqlite3_queryf(sqlite3* db, sqlite3_stmt **arg_stmt, const char* fmt, ...)
-{
-    sqlite3_stmt *own_stmt;
-    sqlite3_stmt **stmt = (arg_stmt == NULL ? &own_stmt : arg_stmt);
-
-    size_t sqllen = strlen(fmt) + 1;
-    char* sql = malloc(sqllen);
-    if (sql == NULL) return SQLITE_ERROR;
-
-    int res = SQLITE_OK;
-
-    const char *inptr = fmt;
-    char *outptr = sql;
-    while (*inptr) {
-        if (*inptr == '?') {
-            inptr++;
-            if (*inptr == '?') {
-                *(outptr++) = '?';
-            } else {
-                *(outptr++) = '?';
-            }
-            inptr++;
-        } else {
-            *(outptr++) = *(inptr++);
-        }
-    }
-    *outptr = 0;
-
-    static int query_counter = 0;
-    query_counter++;
-#ifdef TOXTORE_MUCHDEBUG
-    fprintf(stderr, "[%d] %s\n", query_counter, sql);
-#endif
-
-    res = sqlite3_prepare_v2(db, sql, sqllen, stmt, NULL);
-    if (res != SQLITE_OK) {
-        fprintf(stderr, "[%d] Sqlite3 prepare error:\n    %s\n -> %s\n", query_counter, sql, sqlite3_errmsg(db));
-        goto clean1;
-    }
-
-    va_list ap;
-    va_start(ap, fmt);
-    int bind_i = 1;
-    inptr = fmt;
-    while (*inptr) {
-        if (*inptr == '?') {
-            inptr++;
-            switch (*inptr) {
-                case '?':
-                    break;
-                case 's': {
-                    const char* str = va_arg(ap, const char*);
-                    sqlite3_bind_text(*stmt, bind_i++, str, -1, SQLITE_TRANSIENT);
-                    break;
-                }
-                case 'S': {
-                    const char* str = va_arg(ap, const char*);
-                    size_t len = va_arg(ap, size_t);
-                    sqlite3_bind_text(*stmt, bind_i++, str, len, SQLITE_TRANSIENT);
-                    break;
-                }
-                case 'i': {
-                    int32_t val = va_arg(ap, int32_t);
-                    sqlite3_bind_int(*stmt, bind_i++, val);
-                    break;
-                }
-                case 'I': {
-                    int64_t val = va_arg(ap, int64_t);
-                    sqlite3_bind_int64(*stmt, bind_i++, val);
-                    break;
-                }
-                case 'B': {
-                    const uint8_t *bytes = va_arg(ap, const uint8_t*);
-                    size_t len = va_arg(ap, size_t);
-                    sqlite3_bind_blob(*stmt, bind_i++, bytes, len, SQLITE_TRANSIENT);
-                    break;
-                }
-                case 'k': {
-                    const uint8_t *bytes = va_arg(ap, const uint8_t*);
-                    sqlite3_bind_blob(*stmt, bind_i++, bytes, TOX_PUBLIC_KEY_SIZE, SQLITE_TRANSIENT);
-                    break;
-                }
-                default:
-                    fprintf(stderr, "Unknown format: %%%c\n", *inptr);
-                    res = SQLITE_ERROR;
-                    goto clean2;
-            };
-        }
-        inptr++;
-    }
-    va_end(ap);
-
-    res = sqlite3_step(*stmt);
-    if (res != SQLITE_ROW && res != SQLITE_DONE) {
-        fprintf(stderr, "Sqlite3 step error: %s\n", sqlite3_errmsg(db));
-    }
-
-clean2:
-    if (arg_stmt == NULL) sqlite3_finalize(*stmt);
-clean1:
-    free(sql);
-    return res;
-}
 
 // -------------------------
 // Helpers
@@ -643,6 +504,7 @@ void toxtore_db_ensure_friend(Toxtore* tt, const uint8_t *pk)
             d.device_pk, d.seq_no, ts, TOXTORE_EVENT_FRIEND_ADD, pk);
     if (res == SQLITE_DONE) {
         toxtore_db_update_friends_table(tt, pk, 0, NULL);
+        toxtore_sync_dot(tt, d);
     } else {
         fprintf(stderr, "Could not add friend (%d), skipping\n", res);
     }
@@ -1072,6 +934,7 @@ uint32_t toxtore_friend_add(Toxtore* tt,
 
     if (*error == TOX_ERR_FRIEND_ADD_OK || *error == TOX_ERR_FRIEND_ADD_ALREADY_SENT) {
         toxtore_db_ensure_friend(tt, address);
+        // TODO maybe add nospam to db and sync it
     }
 
     return id;
@@ -1600,10 +1463,36 @@ void toxtore_friend_request_handler(Tox* tox,
 {
     Toxtore* tt = (Toxtore*) user_data;
 
-    // TODO:
-    // if this is the device of already a friend, add it automatically
+    bool auto_added = false;
 
-    if (tt->friend_request_cb != NULL)
+    const char* expfx = TOXTORE_FRIEND_MSG_PREFIX_OTHER_DEVICE;
+    if (length == TOXTORE_FRIEND_MSG_LEN_OTHER_DEVICE && !memcmp(message, expfx, strlen(expfx))) {
+        uint8_t other_pk[TOX_PUBLIC_KEY_SIZE];
+        bool correct = toxtore_util_hexdecode(other_pk, message + strlen(expfx), TOX_PUBLIC_KEY_SIZE);
+        if (correct) {
+            sqlite3_stmt *stmt;
+            int res = sqlite3_queryf(tt->db, &stmt,
+                "SELECT other_pks FROM friends WHERE pk = ?k", other_pk);
+            bool found = false;
+            if (res == SQLITE_ROW) {
+                int npk = sqlite3_column_bytes(stmt, 0) / TOX_PUBLIC_KEY_SIZE;
+                const uint8_t *by = sqlite3_column_blob(stmt, 0);
+                for (int i = 0; i < npk; i++) {
+                    if (!memcmp(public_key, by + i*TOX_PUBLIC_KEY_SIZE, TOX_PUBLIC_KEY_SIZE)) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            sqlite3_finalize(stmt);
+            if (found) {
+                tox_friend_add_norequest(tt->tox, public_key, NULL);
+                toxtore_db_ensure_friend(tt, public_key);
+            }
+        }
+    }
+
+    if (!auto_added && tt->friend_request_cb != NULL)
         tt->friend_request_cb(tt, public_key, message, length, tt->user_data);
 }
 
@@ -1788,7 +1677,7 @@ void toxtore_friend_connection_status_handler(Tox *tox,
 // ----------------
 // TOXTORE PACKET HANDLERS
 
-#define PINVALID { fprintf(stderr, "Invalid packet received from %d:\n", friend_number); stderr_hexdump(data, length); return; }
+#define PINVALID { fprintf(stderr, "Invalid packet received from %d:\n", friend_number); toxtore_util_stderr_hexdump(data, length); return; }
 
 void toxtore_handle_packet_my_devices(Toxtore* tt,
                                       uint32_t friend_number,
@@ -1936,7 +1825,7 @@ void toxtore_handle_packet_send_dot(Toxtore* tt,
                 d.device_pk, d.seq_no, timestamp, type, pk, (int32_t)removed);
             if (res == SQLITE_DONE && !removed) {
                 tox_friend_add_norequest(tt->tox, pk, NULL);
-                toxtore_db_ensure_friend(tt, pk);                    
+                toxtore_db_ensure_friend(tt, pk);
             }
             break;
         }
@@ -1953,6 +1842,7 @@ void toxtore_handle_packet_send_dot(Toxtore* tt,
                 "INSERT INTO events(device, seq_no, timestamp, type, arg_dot_dev, arg_dot_sn) "
                 "VALUES(?k, ?I, ?I, ?i, ?k, ?I)",
                 d.device_pk, d.seq_no, timestamp, type, d2.device_pk, d2.seq_no);
+            // TODO IMPLEMENT ACTIONS HERE
             break;
         }
         case TOXTORE_EVENT_FRIEND_DEVICES:

@@ -8,7 +8,7 @@ pkg_check_modules(TOXCORE REQUIRED toxcore)
 pkg_check_modules(SQLCIPHER REQUIRED sqlcipher)
 
 # Build toxtore library
-add_library(toxtore SHARED src/toxtore.c)
+add_library(toxtore SHARED src/toxtore.c src/util.c)
 set_target_properties(toxtore PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 0

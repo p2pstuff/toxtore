@@ -36,6 +36,11 @@ cache_flag = removed?
 -- rm friend
 arg_dot = dot of add friend event
 
+-- friend nospam info
+arg_pk = friend pk
+arg_blob = nospam + checksum
+cache_flag = obsolete?
+
 -- friend devices changed
 arg_pk = friend pk
 arg_blob = list of other device pks
@@ -105,6 +110,12 @@ removed : uint8_t
 header
 arg_dot_dev : pk
 arg_dot_sn : uint64_t
+
+-- send dot : event friend nospam value changed
+header
+friend : pk
+obsolete : uint8_t
+data : nospam + checksum
 
 -- send dot : friend devices changed
 header

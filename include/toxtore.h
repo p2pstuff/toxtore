@@ -84,6 +84,20 @@
  *
  */
 
+// --------- v ---------- Utility functions --------- v ----------
+
+int toxtore_util_sqlite3_queryf(sqlite3* db, sqlite3_stmt **arg_stmt, const char* fmt, ...);
+
+void toxtore_util_stderr_hexdump(const void* data, size_t size);
+
+// Hex encode and decode. No NULL terminators read or written.
+void toxtore_util_hexencode(char* out, const uint8_t *in, size_t nbytes);
+bool toxtore_util_hexdecode(uint8_t* out, const char *in, size_t nbytes);
+
+// --------- v ---------- Main Toxtore definitions --------- v ----------
+
+#define TOX_ADDRESS_EXTRA_SIZE (TOX_ADDRESS_SIZE - TOX_PUBLIC_KEY_SIZE)
+
 #define TOXTORE_EVENT_FRIEND_ADD         0
 #define TOXTORE_EVENT_FRIEND_DEL         1
 #define TOXTORE_EVENT_FRIEND_DEVICES     2
@@ -96,15 +110,15 @@
 
 #define TOXTORE_MAX_DEVICES             24      // constrained by packet size
 
+#define TOXTORE_FRIEND_MSG_PREFIX_OTHER_DEVICE  "Other device of "
+#define TOXTORE_FRIEND_MSG_LEN_OTHER_DEVICE (strlen(TOXTORE_FRIEND_MSG_PREFIX_OTHER_DEVICE) + 2*TOX_PUBLIC_KEY_SIZE)
+
 typedef struct Toxtore Toxtore;
 
 typedef struct Dot {
     uint8_t device_pk[TOX_PUBLIC_KEY_SIZE];
     uint64_t seq_no;
 } Dot;
-
-int sqlite3_queryf(sqlite3* db, sqlite3_stmt **arg_stmt, const char* fmt, ...);
-
 
 #define TOXTORE_ERR_NEW_SQLITE ((TOX_ERR_NEW_LOAD_BAD_FORMAT)+10)
 #define TOXTORE_ERR_NEW_BAD_PASSPHRASE ((TOX_ERR_NEW_LOAD_BAD_FORMAT)+11)
