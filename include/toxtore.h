@@ -88,7 +88,7 @@
  * -----
  *
  * This is a minimal viable version of multi-device. Missing features are
- * discussed in toxtore_design.md
+ * discussed in TODO.md
  *
  */
 
@@ -106,10 +106,9 @@ bool toxtore_util_hexdecode(uint8_t* out, const uint8_t *in, size_t nbytes);
 
 #define TOX_ADDRESS_EXTRA_SIZE (TOX_ADDRESS_SIZE - TOX_PUBLIC_KEY_SIZE)
 
-#define TOXTORE_EVENT_FRIEND_ADD         0
-#define TOXTORE_EVENT_FRIEND_DEL         1
-#define TOXTORE_EVENT_FRIEND_NOSPAM      2
-#define TOXTORE_EVENT_FRIEND_DEVICES     3
+#define TOXTORE_EVENT_FRIEND_ADDDEL      0
+#define TOXTORE_EVENT_FRIEND_NOSPAM      1
+#define TOXTORE_EVENT_FRIEND_DEVICES     2
 #define TOXTORE_EVENT_FRIEND_SEND       20
 #define TOXTORE_EVENT_CONFERENCE_SEND   21
 #define TOXTORE_EVENT_SEND_DONE         22
@@ -160,7 +159,9 @@ uint32_t toxtore_friend_add_norequest(Toxtore *tt,
                                       const uint8_t *public_key,
                                       TOX_ERR_FRIEND_ADD *error);
 
-bool toxtore_friend_delete(Toxtore *tt, uint32_t friend_number, TOX_ERR_FRIEND_DELETE *error);
+bool toxtore_friend_delete(Toxtore *tt, uint32_t friend_number, bool all_devices, TOX_ERR_FRIEND_DELETE *error);
+
+bool toxtore_is_deleted_friend(Toxtore *tt, const uint32_t *public_key);
 
 bool toxtore_is_same_person(Toxtore* tt, uint32_t friend_n1, uint32_t friend_n2);
 size_t toxtore_other_devices(Toxtore* tt, uint32_t friend_n, uint32_t** friend_nums);
@@ -214,6 +215,13 @@ typedef void toxtore_friend_added_cb(Toxtore* tt,
                                        const uint8_t *public_key,
                                        void* user_data);
 void toxtore_callback_friend_added(Toxtore *tt, toxtore_friend_added_cb *callback);
+
+// When a friend has been deleted automatically (deleted on another device)
+typedef void toxtore_friend_deleted_cb(Toxtore* tt,
+                                       uint32_t friend_number,
+                                       const uint8_t *public_key,
+                                       void* user_data);
+void toxtore_callback_friend_deleted(Toxtore *tt, toxtore_friend_deleted_cb *callback);
 
 // When we receive a message from a friend
 typedef void toxtore_friend_message_cb(Toxtore *tt,

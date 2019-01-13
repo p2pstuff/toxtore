@@ -28,13 +28,20 @@ An event is uniquely identified by a dot, which is a pair of the Tox ID of the
 device on which it was generated and its sequence number in the log of that
 device. Some events refer to other past events by their dot.
 
-```
--- add friend
-arg_pk = friend pk
-cache_flag = removed?
+Some events act as last-writer-wins registries:
+- friend add/delete (= a LWW boolean)
+- friend nospam info
+- friend device info
+- (when we add it) friend nickname, status message
 
--- rm friend
-arg_dot = dot of add friend event
+Messages are unique events to which flags (sent successfull, mark read) are applied.
+It doesn't matter if these flags are applied many times.
+
+```
+-- friend add/del
+arg_pk = friend pk
+arg_int = is friend? (1 = is friend / friend added, 0 = not friend / friend deleted)
+cache_flag = obsolete?
 
 -- friend nospam info
 arg_pk = friend pk
@@ -101,15 +108,11 @@ dot_seq_no : uint64_t
 dot_type : uint8_t = TOXTORE_EVENT_FRIEND_*
 timestamp : uint64_t
 
--- send dot : event friend add
+-- send dot : event friend adddel
 header
 friend : pk
-removed : uint8_t
-
--- send dot : event rm friend
-header
-arg_dot_dev : pk
-arg_dot_sn : uint64_t
+obsolete? : uint8_t
+is friend : uint8_t
 
 -- send dot : event friend nospam value changed
 header

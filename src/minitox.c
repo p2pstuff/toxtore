@@ -538,6 +538,10 @@ void friend_added_cb(Toxtore *tt, uint32_t friend_no, const uint8_t *public_key,
     addfriend(friend_no);
 }
 
+void friend_deleted_cb(Toxtore *tt, uint32_t friend_no, const uint8_t *public_key, void *user_data) {
+    delfriend(friend_no);
+}
+
 void self_connection_status_cb(Tox *tox, TOX_CONNECTION connection_status, void *user_data)
 {
     self.connection = connection_status;
@@ -741,6 +745,7 @@ void setup_tox(const char* profile, const char* passphrase)
     // friend
     toxtore_callback_friend_request(toxtore, friend_request_cb);
     toxtore_callback_friend_added(toxtore, friend_added_cb);
+    toxtore_callback_friend_deleted(toxtore, friend_deleted_cb);
     toxtore_callback_friend_message(toxtore, friend_message_cb);
     tox_callback_friend_name(tox, friend_name_cb);
     tox_callback_friend_status_message(tox, friend_status_message_cb);
@@ -888,7 +893,7 @@ void command_del(int narg, char **args) {
     switch (INDEX_TO_TYPE(contact_idx)) {
         case TALK_TYPE_FRIEND:
             if (delfriend(num)) {
-                toxtore_friend_delete(toxtore, num, NULL);
+                toxtore_friend_delete(toxtore, num, true, NULL);
                 return;
             }
             break;
@@ -1246,22 +1251,14 @@ void command_ttevents(int narg, char **args) {
             "FROM events ORDER BY timestamp ASC");
     while (res == SQLITE_ROW) {
         switch(sqlite3_column_int(stmt, 3)) {
-            case TOXTORE_EVENT_FRIEND_ADD:
-                PRINT("%s (%s,%4lld) %s +F %s",
+            case TOXTORE_EVENT_FRIEND_ADDDEL:
+                PRINT("%s (%s,%4lld) %s %s %s",
                     getftimets(sqlite3_column_int64(stmt, 2)),
                     _first_hex_bytes(sqlite3_column_blob(stmt, 0)),
                     sqlite3_column_int64(stmt, 1),
                     (sqlite3_column_int(stmt, 10) ? "*" : " "),
+                    (sqlite3_column_int(stmt, 9) ? "+F" : "-F"),
                     _first_hex_bytes(sqlite3_column_blob(stmt, 6)));
-                break;
-            case TOXTORE_EVENT_FRIEND_DEL:
-                PRINT("%s (%s,%4lld) %s -F (%s, %lld)",
-                    getftimets(sqlite3_column_int64(stmt, 2)),
-                    _first_hex_bytes(sqlite3_column_blob(stmt, 0)),
-                    sqlite3_column_int64(stmt, 1),
-                    (sqlite3_column_int(stmt, 10) ? "*" : " "),
-                    _first_hex_bytes(sqlite3_column_blob(stmt, 4)),
-                    sqlite3_column_int64(stmt, 5));
                 break;
             case TOXTORE_EVENT_FRIEND_NOSPAM:
                 PRINT("%s (%s,%4lld) %s Fnospam %s %s",

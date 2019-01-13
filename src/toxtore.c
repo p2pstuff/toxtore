@@ -75,7 +75,6 @@ struct Toxtore {
     char* tox_tmp_save_path;
     char* db_path;
 
-
     sqlite3 *db;
 
     Sending_Message *sending;
@@ -84,6 +83,7 @@ struct Toxtore {
 
     toxtore_friend_request_cb *friend_request_cb;
     toxtore_friend_added_cb *friend_added_cb;
+    toxtore_friend_deleted_cb *friend_deleted_cb;
     toxtore_friend_message_cb *friend_message_cb;
     toxtore_conference_message_cb * conference_message_cb;
     toxtore_friend_read_receipt_cb *friend_read_receipt_cb;
@@ -236,8 +236,8 @@ size_t toxtore_make_packet_send_dot(Toxtore* tt, Dot dot, uint8_t **out)
     int type = sqlite3_column_int(stmt, 1);
     uint64_t timestamp = sqlite3_column_int64(stmt, 0);
     switch (type) {
-        case TOXTORE_EVENT_FRIEND_ADD:
-            pkt_len += TOX_PUBLIC_KEY_SIZE + 1;
+        case TOXTORE_EVENT_FRIEND_ADDDEL:
+            pkt_len += TOX_PUBLIC_KEY_SIZE + 2;
             break;
         case TOXTORE_EVENT_FRIEND_DEVICES:
             pkt_len += TOX_PUBLIC_KEY_SIZE + 2 + sqlite3_column_bytes(stmt, 5);
@@ -255,7 +255,6 @@ size_t toxtore_make_packet_send_dot(Toxtore* tt, Dot dot, uint8_t **out)
         case TOXTORE_EVENT_CONFERENCE_RECV:
             pkt_len += TOX_PUBLIC_KEY_SIZE + TOX_CONFERENCE_ID_SIZE + 2 + 4 + sqlite3_column_bytes(stmt, 6);
             break;
-        case TOXTORE_EVENT_FRIEND_DEL:
         case TOXTORE_EVENT_SEND_DONE:
         case TOXTORE_EVENT_MARK_READ:
             pkt_len += sizeof(Dot);
@@ -278,10 +277,11 @@ size_t toxtore_make_packet_send_dot(Toxtore* tt, Dot dot, uint8_t **out)
     *pw.u64++ = htonll(timestamp);                          // timestamp
 
     switch (type) {
-        case TOXTORE_EVENT_FRIEND_ADD:
+        case TOXTORE_EVENT_FRIEND_ADDDEL:
             if (sqlite3_column_bytes(stmt, 4) != TOX_PUBLIC_KEY_SIZE) goto error;
             memcpy(pw.pk++, sqlite3_column_blob(stmt, 4), TOX_PUBLIC_KEY_SIZE);     // friend pk
-            *pw.u8++ = sqlite3_column_int(stmt, 8);                                 // removed?
+            *pw.u8++ = sqlite3_column_int(stmt, 8);                                 // obsolete?
+            *pw.u8++ = sqlite3_column_int(stmt, 7);                                 // is friend?
             break;
         case TOXTORE_EVENT_FRIEND_NOSPAM:
             if (sqlite3_column_bytes(stmt, 4) != TOX_PUBLIC_KEY_SIZE) goto error;
@@ -321,7 +321,6 @@ size_t toxtore_make_packet_send_dot(Toxtore* tt, Dot dot, uint8_t **out)
             memcpy(pw.u8, sqlite3_column_text(stmt, 6), sqlite3_column_bytes(stmt, 6)); // msg
             pw.u8 += sqlite3_column_bytes(stmt, 6);
             break;
-        case TOXTORE_EVENT_FRIEND_DEL:
         case TOXTORE_EVENT_SEND_DONE:
         case TOXTORE_EVENT_MARK_READ:
             if (sqlite3_column_bytes(stmt, 2) != TOX_PUBLIC_KEY_SIZE) goto error;
@@ -469,8 +468,6 @@ void toxtore_db_update_friends_table(Toxtore* tt, const uint8_t *pk, size_t n_de
                     }
                 }
                 if (!exists) clusters[n_clusters++] = cluster_id;
-            } else {
-                fprintf(stderr, "No device list found for idev=%d (%d %s)\n", idev, res, sqlite3_errmsg(tt->db));
             }
             sqlite3_reset(stmt);
             sqlite3_clear_bindings(stmt);
@@ -519,53 +516,74 @@ void toxtore_db_update_friends_table(Toxtore* tt, const uint8_t *pk, size_t n_de
     }
 }
 
-bool toxtore_db_ensure_friend(Toxtore* tt, const uint8_t *pk)
+bool toxtore_db_set_friend_devices(Toxtore* tt, const uint8_t *pk, size_t n_devices, const uint8_t *devices_pks);
+
+bool toxtore_db_ensure_friend_or_not(Toxtore* tt, const uint8_t *pk, uint8_t is_friend)
 {
     int res = sqlite3_queryf(tt->db, NULL,
-            "SELECT device, seq_no FROM events WHERE type = ?i AND arg_pk = ?k AND cache_flag = 0;",
-            TOXTORE_EVENT_FRIEND_ADD,
-            pk);
+            "SELECT device, seq_no FROM events WHERE type = ?i AND arg_pk = ?k AND arg_int = ?i AND cache_flag = 0;",
+            TOXTORE_EVENT_FRIEND_ADDDEL, pk, (int32_t)is_friend);
     if (res == SQLITE_ROW) {
         // Already in DB
-        return true;
+        return false;
     }
 
-    // Otherwise add to DB
+    // Friend not already there, add to DB
     Dot d = toxtore_new_dot(tt);
     uint64_t ts = toxtore_new_timestamp(tt);
-    // Friend not already there
+
+    sqlite3_exec(tt->db, "BEGIN", 0, 0, 0);
     res = sqlite3_queryf(tt->db, NULL,
-            "INSERT INTO events(device, seq_no, timestamp, type, arg_pk) "
-            "VALUES(?k, ?I, ?I, ?i, ?k)",
-            d.device_pk, d.seq_no, ts, TOXTORE_EVENT_FRIEND_ADD, pk);
-    if (res == SQLITE_DONE) {
-        toxtore_db_update_friends_table(tt, pk, 0, NULL);
-        toxtore_sync_dot(tt, d);
-        return true;
-    } else {
-        fprintf(stderr, "Could not add friend (%d), skipping\n", res);
+        "UPDATE events SET cache_flag = 1 WHERE type = ?i AND arg_pk = ?k AND cache_flag = 0",
+        (int32_t)TOXTORE_EVENT_FRIEND_ADDDEL, pk);
+    if (res != SQLITE_DONE) {
+        sqlite3_exec(tt->db, "ROLLBACK", 0, 0, 0);
+        return false;
     }
-    return false;
+    res = sqlite3_queryf(tt->db, NULL,
+            "INSERT INTO events(device, seq_no, timestamp, type, arg_pk, arg_int) "
+            "VALUES(?k, ?I, ?I, ?i, ?k, ?i)",
+            d.device_pk, d.seq_no, ts, TOXTORE_EVENT_FRIEND_ADDDEL, pk, (int32_t)is_friend);
+    if (res != SQLITE_DONE) {
+        sqlite3_exec(tt->db, "ROLLBACK", 0, 0, 0);
+        return false;
+
+    }
+    sqlite3_exec(tt->db, "COMMIT", 0, 0, 0);
+    if (is_friend) {
+        if (!toxtore_db_set_friend_devices(tt, pk, 0, NULL))
+            toxtore_db_update_friends_table(tt, pk, 0, NULL);
+    } else {
+        sqlite3_queryf(tt->db, NULL, "DELETE FROM friends WHERE pk = ?k", pk);
+        sqlite3_queryf(tt->db, NULL,
+            "UPDATE events SET cache_flag = 1 WHERE arg_pk = ?k AND (type = ?i OR type = ?i)",
+            pk, TOXTORE_EVENT_FRIEND_DEVICES, TOXTORE_EVENT_FRIEND_NOSPAM);
+    }
+    toxtore_sync_dot(tt, d);
+    return true;
 }
 
-void toxtore_db_set_friend_nospam(Toxtore* tt, const uint8_t *pk, const uint8_t *nospam)
+bool toxtore_db_set_friend_nospam(Toxtore* tt, const uint8_t *pk, const uint8_t *nospam)
 {
     int res = sqlite3_queryf(tt->db, NULL,
         "SELECT device, seq_no FROM events "
         "WHERE type = ?i AND arg_pk = ?k AND arg_blob = ?B and cache_flag = 0;",
         (int32_t)TOXTORE_EVENT_FRIEND_NOSPAM, pk, nospam, TOX_ADDRESS_EXTRA_SIZE);
-    if (res == SQLITE_ROW) return; // DB already up to date
+    if (res == SQLITE_ROW) {
+        // DB already up to date
+        return false;
+    }
 
     Dot d = toxtore_new_dot(tt);
     uint64_t ts = toxtore_new_timestamp(tt);
 
     sqlite3_exec(tt->db, "BEGIN", 0, 0, 0);
     res = sqlite3_queryf(tt->db, NULL,
-        "UPDATE events SET cache_flag = 1 WHERE type = ?i AND arg_pk = ?k",
+        "UPDATE events SET cache_flag = 1 WHERE type = ?i AND arg_pk = ?k AND cache_flag = 0",
         (int32_t)TOXTORE_EVENT_FRIEND_NOSPAM, pk);
     if (res != SQLITE_DONE) {
         sqlite3_exec(tt->db, "ROLLBACK", 0, 0, 0);
-        return;
+        return false;
     }
 
     res = sqlite3_queryf(tt->db, NULL,
@@ -575,10 +593,11 @@ void toxtore_db_set_friend_nospam(Toxtore* tt, const uint8_t *pk, const uint8_t 
         pk, nospam, TOX_ADDRESS_EXTRA_SIZE);
     if (res != SQLITE_DONE) {
         sqlite3_exec(tt->db, "ROLLBACK", 0, 0, 0);
-        return;
+        return false;
     }
     sqlite3_exec(tt->db, "COMMIT", 0, 0, 0);
     toxtore_sync_dot(tt, d);
+    return true;
 }
 
 bool toxtore_db_set_friend_devices(Toxtore* tt, const uint8_t *pk, size_t n_devices, const uint8_t *devices_pks)
@@ -673,13 +692,15 @@ void toxtore_sync_internal_states(Toxtore* tt)
         uint8_t pk[TOX_PUBLIC_KEY_SIZE];
         tox_friend_get_public_key(tt->tox, friend_num, pk, NULL);
 
-        toxtore_db_ensure_friend(tt, pk);
+        toxtore_db_ensure_friend_or_not(tt, pk, 1);
     }
     free(friend_list);
 
     // Add db friends to Tox
     sqlite3_stmt *stmt;
-    int res = sqlite3_queryf(tt->db, &stmt, "SELECT arg_pk FROM events WHERE type = ?i AND cache_flag = 0;", TOXTORE_EVENT_FRIEND_ADD);
+    int res = sqlite3_queryf(tt->db, &stmt,
+        "SELECT arg_pk FROM events WHERE type = ?i AND arg_int = 1 AND cache_flag = 0;",
+        TOXTORE_EVENT_FRIEND_ADDDEL);
     while (res == SQLITE_ROW) {
         if (sqlite3_column_bytes(stmt, 0) == TOX_PUBLIC_KEY_SIZE) {
             TOX_ERR_FRIEND_BY_PUBLIC_KEY err;
@@ -1015,8 +1036,9 @@ uint32_t toxtore_friend_add(Toxtore* tt,
     uint32_t id = tox_friend_add(tt->tox, address, message, length, error);
 
     if (*error == TOX_ERR_FRIEND_ADD_OK || *error == TOX_ERR_FRIEND_ADD_ALREADY_SENT) {
-        toxtore_db_ensure_friend(tt, address);
-        toxtore_db_set_friend_nospam(tt, address, address + TOX_PUBLIC_KEY_SIZE);
+        if (toxtore_db_ensure_friend_or_not(tt, address, 1)) {
+            toxtore_db_set_friend_nospam(tt, address, address + TOX_PUBLIC_KEY_SIZE);
+        }
     }
 
     return id;
@@ -1032,13 +1054,13 @@ uint32_t toxtore_friend_add_norequest(Toxtore *tt,
     uint32_t id = tox_friend_add_norequest(tt->tox, public_key, error);
 
     if (*error == TOX_ERR_FRIEND_ADD_OK || *error == TOX_ERR_FRIEND_ADD_ALREADY_SENT) {
-        toxtore_db_ensure_friend(tt, public_key);
+        toxtore_db_ensure_friend_or_not(tt, public_key, 1);
     }
 
     return id;
 }
 
-bool toxtore_friend_delete(Toxtore *tt, uint32_t friend_number, TOX_ERR_FRIEND_DELETE *error)
+bool toxtore_friend_delete(Toxtore *tt, uint32_t friend_number, bool all_devices, TOX_ERR_FRIEND_DELETE *error)
 {
     TOX_ERR_FRIEND_DELETE myerr;
     if (error == NULL) error = &myerr;
@@ -1051,56 +1073,47 @@ bool toxtore_friend_delete(Toxtore *tt, uint32_t friend_number, TOX_ERR_FRIEND_D
         return false;
     }
 
-    bool ok = tox_friend_delete(tt->tox, friend_number, error);
-    if (ok) {
-        while (true) {
-            sqlite3_stmt *stmt;
-            int res = sqlite3_queryf(tt->db, &stmt,
-                        "SELECT device, seq_no FROM events WHERE type = ?i AND arg_pk = ?k AND cache_flag = 0;",
-                        TOXTORE_EVENT_FRIEND_ADD, pk);
-            if (res == SQLITE_ROW) {
-                if (sqlite3_column_bytes(stmt, 0) != TOX_PUBLIC_KEY_SIZE) {
-                    fprintf(stderr, "DB corruption, device is not of good length\n");
-                    sqlite3_finalize(stmt);
-                    break;
-                }
-                Dot ev;
-                memcpy(ev.device_pk, sqlite3_column_blob(stmt, 0), TOX_PUBLIC_KEY_SIZE);
-                ev.seq_no = sqlite3_column_int64(stmt, 1);
-                sqlite3_finalize(stmt);
-
-                Dot d = toxtore_new_dot(tt);
-                uint64_t ts = toxtore_new_timestamp(tt);
-
-                sqlite3_exec(tt->db, "BEGIN", 0, 0, 0);
-                int res = sqlite3_queryf(tt->db, NULL,
-                            "UPDATE events SET cache_flag = 1 WHERE device = ?k AND seq_no = ?I",
-                            ev.device_pk, ev.seq_no);
-                if (res == SQLITE_DONE) {
-                    res = sqlite3_queryf(tt->db, NULL,
-                            "INSERT INTO events(device, seq_no, timestamp, type, arg_dot_dev, arg_dot_sn) "
-                                "VALUES(?k, ?I, ?I, ?i, ?k, ?I)",
-                            d.device_pk, d.seq_no, ts, TOXTORE_EVENT_FRIEND_DEL,
-                            ev.device_pk, ev.seq_no);
-                    if (res == SQLITE_DONE) {
-                        sqlite3_exec(tt->db, "COMMIT", 0, 0, 0);
-                        toxtore_sync_dot(tt, d);
-                    } else {
-                        fprintf(stderr, "Coud not log delete friend event (%d)\n", res);
-                        sqlite3_exec(tt->db, "ROLLBACK", 0, 0, 0);
-                    }
-                } else {
-                    fprintf(stderr, "Coud not log delete friend event (%d)\n", res);
-                    sqlite3_exec(tt->db, "ROLLBACK", 0, 0, 0);
-                }
-            } else {
-                sqlite3_finalize(stmt);
-                break;
+    if (all_devices) {
+        bool ok = false;
+        sqlite3_stmt *stmt;
+        int res = sqlite3_queryf(tt->db, &stmt,
+            "SELECT fb.pk FROM friends fa "
+            "LEFT JOIN friends fb ON fa.merged_id = fb.merged_id "
+            "WHERE fa.pk = ?k",
+            pk);
+        while (res == SQLITE_ROW) {
+            const uint8_t *pk2 = sqlite3_column_blob(stmt, 0);
+            TOX_ERR_FRIEND_BY_PUBLIC_KEY err2;
+            uint32_t friend_n_2 = tox_friend_by_public_key(tt->tox, pk2, &err2);
+            if (err2 == TOX_ERR_FRIEND_BY_PUBLIC_KEY_OK) {
+                bool deleted = toxtore_friend_delete(tt, friend_n_2, false, error);
+                ok = ok || deleted;
+                if (deleted && friend_n_2 != friend_number && tt->friend_deleted_cb)
+                    tt->friend_deleted_cb(tt, friend_n_2, pk2, tt->user_data);
             }
+            res = sqlite3_step(stmt);
         }
-    }
+        sqlite3_finalize(stmt);
+        return ok;
+    } else {
+        bool ok = tox_friend_delete(tt->tox, friend_number, error);
+        if (ok) {
+            toxtore_db_ensure_friend_or_not(tt, pk, 0);
+        }
 
-    return ok;
+        return ok;
+    }
+}
+
+bool toxtore_is_deleted_friend(Toxtore *tt, const uint32_t *public_key)
+{
+    int res = sqlite3_queryf(tt->db, NULL,
+        "SELECT device, seq_no FROM events WHERE type = ?i AND arg_pk = ?k AND arg_int = 0 AND cache_flag = 0",
+        TOXTORE_EVENT_FRIEND_ADDDEL, public_key);
+    if (res == SQLITE_ROW) {
+        return true;
+    }
+    return false;
 }
 
 bool toxtore_is_same_person(Toxtore* tt, uint32_t friend_n1, uint32_t friend_n2)
@@ -1134,37 +1147,44 @@ size_t toxtore_other_devices(Toxtore* tt, uint32_t friend_n, uint32_t** friend_n
     uint8_t pk[TOX_PUBLIC_KEY_SIZE];
     TOX_ERR_FRIEND_GET_PUBLIC_KEY err;
     tox_friend_get_public_key(tt->tox, friend_n, pk, &err);
-    if (err != TOX_ERR_FRIEND_GET_PUBLIC_KEY_OK) return false;
+    if (err != TOX_ERR_FRIEND_GET_PUBLIC_KEY_OK) return 0;
 
     sqlite3_stmt *stmt;
     int res = sqlite3_queryf(tt->db, &stmt,
-        "SELECT other_pks FROM friends WHERE pk = ?k", pk);
-    if (res != SQLITE_ROW) goto error;
-
-    size_t npk = sqlite3_column_bytes(stmt, 0) / TOX_PUBLIC_KEY_SIZE;
-    if (npk == 0) goto error;
+        "SELECT COUNT(fb.pk) FROM friends fa "
+        "LEFT JOIN friends fb ON fa.merged_id = fb.merged_id "
+        "WHERE fa.pk = ?k", pk);
+    if (res != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+    size_t npk = sqlite3_column_int(stmt, 0);
+    sqlite3_finalize(stmt);
 
     *friend_nums = malloc(sizeof(uint32_t)*npk);
-    if (*friend_nums == NULL) goto error;
+    if (*friend_nums == NULL) return 0;
 
     size_t used = 0;
-    for (int ipk = 0; ipk < npk; ipk++) {
+    res = sqlite3_queryf(tt->db, &stmt,
+        "SELECT fb.pk FROM friends fa "
+        "LEFT JOIN friends fb ON fa.merged_id = fb.merged_id "
+        "WHERE fa.pk = ?k", pk);
+    while (res == SQLITE_ROW && used < npk) {
         TOX_ERR_FRIEND_BY_PUBLIC_KEY err1;
-        uint32_t fi = tox_friend_by_public_key(tt->tox, sqlite3_column_blob(stmt, 0) + ipk*TOX_PUBLIC_KEY_SIZE, &err1);
+        uint32_t fi = tox_friend_by_public_key(tt->tox, sqlite3_column_blob(stmt, 0), &err1);
         if (err1 == TOX_ERR_FRIEND_BY_PUBLIC_KEY_OK) {
             (*friend_nums)[used++] = fi;
         }
+        res = sqlite3_step(stmt);
+
     }
+    sqlite3_finalize(stmt);
 
     if (used == 0) {
         free(*friend_nums);
         *friend_nums = NULL;
     }
     return used;
-
-error:
-    sqlite3_finalize(stmt);
-    return 0;
 }
 
 uint32_t toxtore_get_preferred_device(Toxtore* tt, uint32_t friend_n)
@@ -1202,7 +1222,7 @@ bool toxtore_add_friend_as_device(Toxtore* tt, uint32_t friend_number)
 
     sqlite3_stmt *stmt;
     int res = sqlite3_queryf(tt->db, &stmt,
-                "SELECT removed FROM devices WHERE pk = ?k AND removed = 0;",
+                "SELECT removed FROM devices WHERE pk = ?k;",
                 pk);
     bool exists, removed;
     if (res == SQLITE_ROW) {
@@ -1514,6 +1534,11 @@ void toxtore_callback_friend_added(Toxtore *tt, toxtore_friend_added_cb *callbac
     tt->friend_added_cb = callback;
 }
 
+void toxtore_callback_friend_deleted(Toxtore *tt, toxtore_friend_deleted_cb *callback)
+{
+    tt->friend_deleted_cb = callback;
+}
+
 void toxtore_callback_friend_message(Toxtore *tt, toxtore_friend_message_cb *callback)
 {
     tt->friend_message_cb = callback;
@@ -1575,9 +1600,10 @@ void toxtore_friend_request_handler(Tox* tox,
             if (found) {
                 TOX_ERR_FRIEND_ADD err;
                 uint32_t no = tox_friend_add_norequest(tt->tox, public_key, &err);
-                if (err == TOX_ERR_FRIEND_ADD_OK && tt->friend_added_cb) {
-                    toxtore_db_ensure_friend(tt, public_key);
-                    tt->friend_added_cb(tt, no, public_key, tt->user_data);
+                if (err == TOX_ERR_FRIEND_ADD_OK) {
+                    toxtore_db_ensure_friend_or_not(tt, public_key, 1);
+                    if (tt->friend_added_cb)
+                        tt->friend_added_cb(tt, no, public_key, tt->user_data);
                     auto_added = true;
                 }
             } else {
@@ -1799,7 +1825,7 @@ void _toxtore_my_devices_check_pending_autoadd(Toxtore *tt, Pending_Autoadd_Requ
                 TOX_ERR_FRIEND_ADD err;
                 uint32_t id = tox_friend_add_norequest(tt->tox, p[0]->friend_req_pk, &err);
                 if (err == TOX_ERR_FRIEND_ADD_OK && tt->friend_added_cb) {
-                    toxtore_db_ensure_friend(tt, p[0]->friend_req_pk);
+                    toxtore_db_ensure_friend_or_not(tt, p[0]->friend_req_pk, 1);
                     tt->friend_added_cb(tt, id, p[0]->friend_req_pk, tt->user_data);
                 }
                 // We can delete it
@@ -1988,35 +2014,37 @@ void toxtore_handle_packet_send_dot(Toxtore* tt,
     }
 
     switch(type) {
-        case TOXTORE_EVENT_FRIEND_ADD:
+        case TOXTORE_EVENT_FRIEND_ADDDEL:
         {
-            if (data+length - p.u8 != TOX_PUBLIC_KEY_SIZE + 1) PINVALID;
+            if (data+length - p.u8 != TOX_PUBLIC_KEY_SIZE + 2) PINVALID;
             uint8_t *pk = p.u8; p.pk++;
-            uint8_t removed = *p.u8++;
+            uint8_t obsolete = *p.u8++;
+            uint8_t is_friend = *p.u8++;
             int res = sqlite3_queryf(tt->db, NULL,
-                "INSERT INTO events(device, seq_no, timestamp, type, arg_pk, cache_flag) "
-                "VALUES(?k, ?I, ?I, ?i, ?k, ?i)",
-                d.device_pk, d.seq_no, timestamp, type, pk, (int32_t)removed);
-            if (res == SQLITE_DONE && !removed) {
-                // TODO do this only if we don't have them as friend already
-                toxtore_db_update_friends_table(tt, pk, 0, NULL);
+                "INSERT INTO events(device, seq_no, timestamp, type, arg_pk, arg_int, cache_flag) "
+                "VALUES(?k, ?I, ?I, ?i, ?k, ?i, ?i)",
+                d.device_pk, d.seq_no, timestamp, type, pk, (int32_t)is_friend, (int32_t)obsolete);
+            if (res == SQLITE_DONE && !obsolete) {
+                if (_toxtore_handle_dot_maybe_latest(tt, d, type, pk)) {
+                    if (is_friend) {
+                        res = sqlite3_queryf(tt->db, NULL, "SELECT merged_id FROM friends WHERE pk = ?k", pk);
+                        if (res != SQLITE_ROW)
+                            toxtore_db_update_friends_table(tt, pk, 0, NULL);
+                    } else {
+                        sqlite3_queryf(tt->db, NULL, "DELETE FROM friends WHERE pk = ?k", pk);
+                        sqlite3_queryf(tt->db, NULL,
+                            "UPDATE events SET cache_flag = 1 WHERE arg_pk = ?k AND (type = ?i OR type = ?i)",
+                            pk, TOXTORE_EVENT_FRIEND_DEVICES, TOXTORE_EVENT_FRIEND_NOSPAM);
+                        TOX_ERR_FRIEND_BY_PUBLIC_KEY err;
+                        uint32_t num = tox_friend_by_public_key(tt->tox, pk, &err);
+                        if (err == TOX_ERR_FRIEND_BY_PUBLIC_KEY_OK) {
+                            tox_friend_delete(tt->tox, num, NULL);
+                            if (tt->friend_deleted_cb)
+                                tt->friend_deleted_cb(tt, num, pk, tt->user_data);
+                        }
+                    }
+                }
             }
-            break;
-        }
-        case TOXTORE_EVENT_FRIEND_DEL:
-        {
-            if (data+length - p.u8 != sizeof(Dot)) PINVALID;
-            Dot d2;
-            memcpy(d2.device_pk, p.pk++, TOX_PUBLIC_KEY_SIZE);
-            d2.seq_no = ntohll(*p.u64++);
-            sqlite3_queryf(tt->db, NULL, "UPDATE events SET cache_flag = 1 "
-                "WHERE device = ?k AND seq_no = ?I and type = ?i",
-                d2.device_pk, d2.seq_no, TOXTORE_EVENT_FRIEND_ADD);
-            sqlite3_queryf(tt->db, NULL,
-                "INSERT INTO events(device, seq_no, timestamp, type, arg_dot_dev, arg_dot_sn) "
-                "VALUES(?k, ?I, ?I, ?i, ?k, ?I)",
-                d.device_pk, d.seq_no, timestamp, type, d2.device_pk, d2.seq_no);
-            // TODO IMPLEMENT ACTIONS HERE
             break;
         }
         case TOXTORE_EVENT_FRIEND_NOSPAM:
