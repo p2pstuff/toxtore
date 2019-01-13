@@ -146,7 +146,7 @@ clean1:
 
 // Hex encode and decode
 
-void toxtore_util_hexencode(char* out, const uint8_t *in, size_t nbytes)
+void toxtore_util_hexencode(uint8_t* out, const uint8_t *in, size_t nbytes)
 {
     const char* digits = "0123456789ABCDEF";
     for (size_t i = 0; i < nbytes; i++) {
@@ -163,7 +163,7 @@ static inline int _hexchr2num(char c)
     return -1;
 }
 
-bool toxtore_util_hexdecode(uint8_t* out, const char *in, size_t nbytes)
+bool toxtore_util_hexdecode(uint8_t* out, const uint8_t *in, size_t nbytes)
 {
     for (size_t i = 0; i < nbytes; i++) {
         int hi = _hexchr2num(in[2*i]);
@@ -171,4 +171,5 @@ bool toxtore_util_hexdecode(uint8_t* out, const char *in, size_t nbytes)
         if (hi == -1 || lo == -1) return false;
         out[i] = (hi << 4) | lo;
     }
+    return true;
 }

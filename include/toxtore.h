@@ -24,6 +24,14 @@
  * Use toxtore_add_friend_as_device to accept.
  *
  *
+ * NEW TOXTORE CALLBACKS
+ * ---------------------
+ *
+ * Toxtore adds a few callbacks, mainly for events that happenned on other devices:
+ *
+ * - toxtore_callback_friend_added: we just added a friend because it was added on another device
+ *
+ *
  * FUNCTIONS REPLACED BY TOXTORE
  * -----------------------------
  *
@@ -40,8 +48,8 @@
  *
  * CALLBACKS REPLACED BY TOXTORE
  * -----------------------------
- * 
- * TODO: Hijack ALL tox callbacks so that going to Toxtore is simply a matter of doing: 
+ *
+ * TODO: Hijack ALL tox callbacks so that going to Toxtore is simply a matter of doing:
  *      s/tox_callback_/toxtore_callback_/ and s/tox_iterate/toxtore_iterate/
  *  and changing the arguments of a few callbacks
  *
@@ -91,8 +99,8 @@ int toxtore_util_sqlite3_queryf(sqlite3* db, sqlite3_stmt **arg_stmt, const char
 void toxtore_util_stderr_hexdump(const void* data, size_t size);
 
 // Hex encode and decode. No NULL terminators read or written.
-void toxtore_util_hexencode(char* out, const uint8_t *in, size_t nbytes);
-bool toxtore_util_hexdecode(uint8_t* out, const char *in, size_t nbytes);
+void toxtore_util_hexencode(uint8_t* out, const uint8_t *in, size_t nbytes);
+bool toxtore_util_hexdecode(uint8_t* out, const uint8_t *in, size_t nbytes);
 
 // --------- v ---------- Main Toxtore definitions --------- v ----------
 
@@ -100,7 +108,8 @@ bool toxtore_util_hexdecode(uint8_t* out, const char *in, size_t nbytes);
 
 #define TOXTORE_EVENT_FRIEND_ADD         0
 #define TOXTORE_EVENT_FRIEND_DEL         1
-#define TOXTORE_EVENT_FRIEND_DEVICES     2
+#define TOXTORE_EVENT_FRIEND_NOSPAM      2
+#define TOXTORE_EVENT_FRIEND_DEVICES     3
 #define TOXTORE_EVENT_FRIEND_SEND       20
 #define TOXTORE_EVENT_CONFERENCE_SEND   21
 #define TOXTORE_EVENT_SEND_DONE         22
@@ -198,6 +207,13 @@ typedef void toxtore_friend_request_cb(Toxtore *tt,
                                        size_t length,
                                        void *user_data);
 void toxtore_callback_friend_request(Toxtore *tt, toxtore_friend_request_cb *callback);
+
+// When a friend has been added automatically (added on another device)
+typedef void toxtore_friend_added_cb(Toxtore* tt,
+                                       uint32_t friend_number,
+                                       const uint8_t *public_key,
+                                       void* user_data);
+void toxtore_callback_friend_added(Toxtore *tt, toxtore_friend_added_cb *callback);
 
 // When we receive a message from a friend
 typedef void toxtore_friend_message_cb(Toxtore *tt,

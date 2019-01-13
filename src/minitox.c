@@ -44,6 +44,7 @@ struct DHT_node bootstrap_nodes[] = {
     {"2400:6180:0:d0::17a:a001",   33445, "B05C8869DBB4EDDD308F43C1A974A20A725A36EACCA123862FDE9945BF9D3E09"},
 };
 
+
 #define LINE_MAX_SIZE 512  // If input line's length surpassed this value, it will be truncated.
 
 #define PORT_RANGE_START 33445     // tox listen port range
@@ -533,6 +534,10 @@ void friend_request_cb(Toxtore *tt, const uint8_t *public_key, const uint8_t *me
     requests = req;
 }
 
+void friend_added_cb(Toxtore *tt, uint32_t friend_no, const uint8_t *public_key, void *user_data) {
+    addfriend(friend_no);
+}
+
 void self_connection_status_cb(Tox *tox, TOX_CONNECTION connection_status, void *user_data)
 {
     self.connection = connection_status;
@@ -735,6 +740,7 @@ void setup_tox(const char* profile, const char* passphrase)
 
     // friend
     toxtore_callback_friend_request(toxtore, friend_request_cb);
+    toxtore_callback_friend_added(toxtore, friend_added_cb);
     toxtore_callback_friend_message(toxtore, friend_message_cb);
     tox_callback_friend_name(tox, friend_name_cb);
     tox_callback_friend_status_message(tox, friend_status_message_cb);
@@ -864,7 +870,7 @@ void command_add(int narg, char **args) {
 
     uint8_t *bin_id = hex2bin(hex_id);
     TOX_ERR_FRIEND_ADD err;
-    uint32_t friend_num = tox_friend_add(tox, bin_id, (uint8_t*)msg, strlen(msg), &err);
+    uint32_t friend_num = toxtore_friend_add(toxtore, bin_id, (uint8_t*)msg, strlen(msg), &err);
     free(bin_id);
 
     if (err != TOX_ERR_FRIEND_ADD_OK) {
@@ -1055,7 +1061,7 @@ void _command_accept(int narg, char **args, bool is_accept) {
         if (is_accept) {
             if (req->is_friend_request) {
                 TOX_ERR_FRIEND_ADD err;
-                uint32_t friend_num = tox_friend_add_norequest(tox, req->userdata.friend.pubkey, &err);
+                uint32_t friend_num = toxtore_friend_add_norequest(toxtore, req->userdata.friend.pubkey, &err);
                 if (err != TOX_ERR_FRIEND_ADD_OK) {
                     ERROR("! accept friend request failed, errcode:%d", err);
                 } else {
@@ -1256,6 +1262,15 @@ void command_ttevents(int narg, char **args) {
                     (sqlite3_column_int(stmt, 10) ? "*" : " "),
                     _first_hex_bytes(sqlite3_column_blob(stmt, 4)),
                     sqlite3_column_int64(stmt, 5));
+                break;
+            case TOXTORE_EVENT_FRIEND_NOSPAM:
+                PRINT("%s (%s,%4lld) %s Fnospam %s %s",
+                    getftimets(sqlite3_column_int64(stmt, 2)),
+                    _first_hex_bytes(sqlite3_column_blob(stmt, 0)),
+                    sqlite3_column_int64(stmt, 1),
+                    (sqlite3_column_int(stmt, 10) ? "*" : " "),
+                    _first_hex_bytes(sqlite3_column_blob(stmt, 6)),
+                    _first_hex_bytes(sqlite3_column_blob(stmt, 7)));
                 break;
             case TOXTORE_EVENT_FRIEND_DEVICES:
                 PRINT("%s (%s,%4lld) %s Fdev %s %s",

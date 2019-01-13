@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.9)
 project(toxtore VERSION 0.0.1 DESCRIPTION "Storage engine and multi-device synchronization for Tox")
 include(GNUInstallDirs)
 
+add_compile_options(-Wall -Werror)
+
 # Search for dependencies
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(TOXCORE REQUIRED toxcore)
@@ -29,7 +31,7 @@ target_include_directories(mdmt PRIVATE include)
 
 target_link_libraries(mdmt ${TOXCORE_LIBRARIES} ${SQLCIPHER_LIBRARIES} toxtore)
 target_include_directories(mdmt PUBLIC ${TOXCORE_INCLUDE_DIRS} ${SQLCIPHER_INCLUDE_DIRS})
-target_compile_options(mdmt PUBLIC ${TOXCORE_CFLAGS_OTHER} ${SQLCIPHER_CFLAGS_OTHER})
+target_compile_options(mdmt PUBLIC ${TOXCORE_CFLAGS_OTHER} ${SQLCIPHER_CFLAGS_OTHER} -DSQLITE_HAS_CODEC)
 
 # Installation 
 install(TARGETS toxtore
