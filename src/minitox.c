@@ -1,4 +1,8 @@
 /*
+ * MDMT - A multi-device enabled Tox client based on MiniTox
+ *
+ * The original Minitox can be found here:
+ * https://github.com/hqwrong/minitox
  * MiniTox - A minimal client for Tox
  */
 
@@ -13,6 +17,7 @@
 #include <time.h>
 #include <stdarg.h>
 #include <assert.h>
+#include <signal.h>
 
 #include <termios.h>
 #include <unistd.h>
@@ -76,8 +81,6 @@ struct DHT_node bootstrap_nodes[] = {
 #define GUEST_MSG_NEW_FLAG "\x01b[33m\x01b[1m*" RESET_COLOR
 #define SELF_MSG_SENDING_FLAG "\x01b[31m…" RESET_COLOR
 
-bool must_arepl_reprint = false;
-
 #define PRINT(_fmt, ...) \
     fputs(CODE_ERASE_LINE,stdout);\
     printf(_fmt "\n", ##__VA_ARGS__);\
@@ -108,19 +111,19 @@ struct Command {
     CommandHandler *handler;
 };
 
-struct GroupUserData {
+struct GroupRequestUserData {
     uint32_t friend_num;
     uint8_t *cookie;
     size_t length;
 };
 
-struct FriendUserData {
+struct FriendRequestUserData {
     uint8_t pubkey[TOX_PUBLIC_KEY_SIZE];
 };
 
 union RequestUserData {
-    struct GroupUserData group;
-    struct FriendUserData friend;
+    struct GroupRequestUserData group;
+    struct FriendRequestUserData friend;
 };
 
 struct Request {
@@ -169,6 +172,8 @@ struct Group *groups = NULL;
 enum TALK_TYPE { TALK_TYPE_FRIEND, TALK_TYPE_GROUP, TALK_TYPE_COUNT, TALK_TYPE_NULL = UINT32_MAX };
 
 uint32_t TalkingTo = TALK_TYPE_NULL;
+
+void quit_minitox();
 
 
 /*******************************************************************************
@@ -333,6 +338,8 @@ struct AsyncREPL {
 struct termios saved_tattr;
 
 struct AsyncREPL *async_repl;
+
+bool must_arepl_reprint = false;
 
 void arepl_exit(void) {
     tcsetattr(NEW_STDIN_FILENO, TCSAFLUSH, &saved_tattr);
@@ -765,6 +772,10 @@ void setup_tox(const char* profile, const char* passphrase)
  *
  ******************************************************************************/
 
+void command_quit(int narg, char **args) {
+    quit_minitox();
+}
+
 void command_help(int narg, char **args);
 
 void command_guide(int narg, char **args) {
@@ -1073,7 +1084,7 @@ void _command_accept(int narg, char **args, bool is_accept) {
                     addfriend(friend_num);
                 }
             } else { // group invite
-                struct GroupUserData *data = &req->userdata.group;
+                struct GroupRequestUserData *data = &req->userdata.group;
                 TOX_ERR_CONFERENCE_JOIN err;
                 uint32_t group_num = tox_conference_join(tox, data->friend_num, data->cookie, data->length, &err);
                 if (err != TOX_ERR_CONFERENCE_JOIN_OK) {
@@ -1355,6 +1366,12 @@ void command_ttfriends(int narg, char **args) {
 
 struct Command commands[] = {
     {
+        "quit",
+        "- quit MDMT",
+        0,
+        command_quit,
+    },
+    {
         "guide",
         "- print the guide",
         0,
@@ -1505,7 +1522,7 @@ void repl_iterate(void){
         for (int i=0;i<n;i++) { // for_1
             char c = buf[i];
             if (c == '\004')          /* C-d */
-                exit(0);
+                quit_minitox();
             if (!arepl_readline(async_repl, c, line, sizeof(line))) continue; // continue to for_1
 
             int len = strlen(line);
@@ -1611,8 +1628,21 @@ int password_prompt(char *buf, int size)
     return len;
 }
 
+void quit_minitox() {
+    PRINT("Saving state and exiting...");
+    toxtore_save(toxtore);
+    toxtore_kill(toxtore);
+    exit(0);
+}
+
+void handle_signal(int sig) {
+    if (sig == SIGTERM || sig == SIGINT) {
+        quit_minitox();
+    }
+}
+
 int main(int argc, char **argv) {
-    const char* profile = "minitox";
+    const char* profile = "mdmt";
     const char* passphrase = NULL;
     bool no_passphrase = false;
 
@@ -1671,6 +1701,14 @@ int main(int argc, char **argv) {
 
     setup_arepl();
     setup_tox(profile, passphrase);
+
+    struct sigaction sa = {
+        .sa_handler = &handle_signal,
+        .sa_flags = SA_RESTART,
+    };
+    sigfillset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
 
     INFO("* Waiting to be online ...");
 

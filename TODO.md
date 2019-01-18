@@ -18,9 +18,6 @@ Things we know how to do
 Things that we haven't figured out yet
 --------------------------------------
 
-- Automatically but securely make friends with the other devices of our 
-  friends so that all devices of user A can talk with all devices of user B
-
 - Figure out a robust way of preventing multiple sending of messages
   when a peer comes back online
 

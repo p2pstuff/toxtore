@@ -54,18 +54,13 @@ int toxtore_util_sqlite3_queryf(sqlite3* db, sqlite3_stmt **arg_stmt, const char
     char *outptr = sql;
     while (*inptr) {
         if (*inptr == '?') {
-            inptr++;
-            if (*inptr == '?') {
-                *(outptr++) = '?';
-            } else {
-                *(outptr++) = '?';
-            }
-            inptr++;
+            inptr += 2;
+            *(outptr++) = '?';
         } else {
             *(outptr++) = *(inptr++);
         }
     }
-    *outptr = 0;
+    *(outptr++) = 0;
 
     static int query_counter = 0;
     query_counter++;
@@ -73,7 +68,7 @@ int toxtore_util_sqlite3_queryf(sqlite3* db, sqlite3_stmt **arg_stmt, const char
     fprintf(stderr, "[%d] %s\n", query_counter, sql);
 #endif
 
-    res = sqlite3_prepare_v2(db, sql, sqllen, stmt, NULL);
+    res = sqlite3_prepare_v2(db, sql, outptr-sql, stmt, NULL);
     if (res != SQLITE_OK) {
         fprintf(stderr, "[%d] Sqlite3 prepare error:\n    %s\n -> %s\n", query_counter, sql, sqlite3_errmsg(db));
         goto clean1;
@@ -87,8 +82,6 @@ int toxtore_util_sqlite3_queryf(sqlite3* db, sqlite3_stmt **arg_stmt, const char
         if (*inptr == '?') {
             inptr++;
             switch (*inptr) {
-                case '?':
-                    break;
                 case 's': {
                     const char* str = va_arg(ap, const char*);
                     sqlite3_bind_text(*stmt, bind_i++, str, -1, SQLITE_TRANSIENT);
@@ -133,7 +126,7 @@ int toxtore_util_sqlite3_queryf(sqlite3* db, sqlite3_stmt **arg_stmt, const char
 
     res = sqlite3_step(*stmt);
     if (res != SQLITE_ROW && res != SQLITE_DONE) {
-        fprintf(stderr, "Sqlite3 step error: %s\n", sqlite3_errmsg(db));
+        fprintf(stderr, "[%d] Sqlite3 step error: %s\n", query_counter, sqlite3_errmsg(db));
     }
 
 clean2:

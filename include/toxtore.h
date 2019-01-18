@@ -30,6 +30,7 @@
  * Toxtore adds a few callbacks, mainly for events that happenned on other devices:
  *
  * - toxtore_callback_friend_added: we just added a friend because it was added on another device
+ * - toxtore_callback_friend_deleted: we just deleted a friend because it was deleted on another device
  *
  *
  * FUNCTIONS REPLACED BY TOXTORE
